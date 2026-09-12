@@ -428,6 +428,80 @@ button:disabled {
   color: #ffffff;
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22);
   animation: toast-in 0.18s ease-out;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toast span {
+  flex: 1;
+}
+
+.toast-action {
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #b91c1c;
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.edit-banner {
+  margin: -4px 0 16px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  font-size: 13px;
+}
+
+.record-actions {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.record-btn {
+  min-height: 30px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.record-btn-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+
+.record-btn-danger {
+  color: #e11d48;
+  border-color: color-mix(in srgb, #e11d48 40%, var(--border));
+}
+
+.delete-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  color: #9f1239;
+}
+
+.danger-action {
+  min-height: 30px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #e11d48;
+  border-color: #e11d48;
+  color: #ffffff;
 }
 
 .toast-success {

@@ -82,7 +82,15 @@ interface Toast {
   id: number;
   type: "success" | "error" | "info";
   text: string;
+  duration?: number;
+  actionLabel?: string;
+  onAction?: () => void;
 }
+
+/** 移除后的撤销窗口（毫秒） */
+const UNDO_WINDOW = 6000;
+/** 移除确认按钮的停留时间（毫秒），超时自动取消确认 */
+const CONFIRM_WINDOW = 3000;
 
 /** 从示例备注里提取工作长度（如 "MB 19.5mm，主尖锉#30" -> "19.5"） */
 function extractWorkingLength(detail: string): string {
@@ -168,9 +176,13 @@ function App() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const toastSeq = useRef(0);
   const toothInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const confirmTimerRef = useRef<number | null>(null);
+  const toastTimersRef = useRef<Map<number, number>>(new Map());
 
   useEffect(() => {
     try {
@@ -180,12 +192,28 @@ function App() {
     }
   }, [records]);
 
-  const pushToast = (type: Toast["type"], text: string) => {
+  const dismissToast = (id: number) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    const timer = toastTimersRef.current.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      toastTimersRef.current.delete(id);
+    }
+  };
+
+  const pushToast = (
+    type: Toast["type"],
+    text: string,
+    options?: { duration?: number; actionLabel?: string; onAction?: () => void }
+  ) => {
     const id = ++toastSeq.current;
-    setToasts((prev) => [...prev, { id, type, text }]);
-    window.setTimeout(() => {
-      setToasts((prev) => prev.filter((toast) => toast.id !== id));
-    }, 2800);
+    const duration = options?.duration ?? 2800;
+    setToasts((prev) => [
+      ...prev,
+      { id, type, text, duration, actionLabel: options?.actionLabel, onAction: options?.onAction }
+    ]);
+    const timer = window.setTimeout(() => dismissToast(id), duration);
+    toastTimersRef.current.set(id, timer);
   };
 
   const filteredRecords = useMemo(
@@ -209,15 +237,20 @@ function App() {
     return [String(waiting), String(filled), average, String(medicated)];
   }, [records]);
 
-  const validate = (state: FormState): Partial<Record<keyof FormState, string>> => {
+  const validate = (
+    state: FormState,
+    excludeId?: string | null
+  ): Partial<Record<keyof FormState, string>> => {
     const next: Partial<Record<keyof FormState, string>> = {};
     const tooth = normalizeTooth(state.tooth);
     if (!state.tooth.trim()) {
       next.tooth = "请填写牙位";
     } else if (!TOOTH_PATTERN.test(tooth)) {
       next.tooth = "牙位需为 11–48 的两位数字（FDI 编号，可带 # 前缀）";
-    } else if (records.some((record) => record.tooth === tooth)) {
-      next.tooth = `牙位 ${tooth} 已有记录，如需更新请在下方列表切换阶段`;
+    } else if (
+      records.some((record) => record.tooth === tooth && record.id !== excludeId)
+    ) {
+      next.tooth = `牙位 ${tooth} 已有记录，同一牙位不能重复录入`;
     }
     if (!state.diagnosis.trim()) {
       next.diagnosis = "请填写诊断";
@@ -239,31 +272,138 @@ function App() {
     setErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
   };
 
+  const resetForm = () => {
+    setForm(EMPTY_FORM);
+    setErrors({});
+    setEditingId(null);
+  };
+
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
-    const nextErrors = validate(form);
+    const nextErrors = validate(form, editingId);
     if (Object.keys(nextErrors).length > 0) {
       setErrors(nextErrors);
-      pushToast("error", "保存失败：请修正标红字段后重试");
+      pushToast("error", editingId ? "更新失败：请修正标红字段后重试" : "保存失败：请修正标红字段后重试");
       return;
     }
     const tooth = normalizeTooth(form.tooth);
-    const record: RCRecord = {
-      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    const cleaned = {
       tooth,
       diagnosis: form.diagnosis.trim(),
       stage: form.stage,
       workingLength: String(parseFloat(form.workingLength.trim())),
-      note: form.note.trim(),
+      note: form.note.trim()
+    };
+
+    if (editingId) {
+      let previous: RCRecord | undefined;
+      setRecords((prev) =>
+        prev.map((item) => {
+          if (item.id !== editingId) return item;
+          previous = item;
+          return { ...item, ...cleaned };
+        })
+      );
+      if (previous) {
+        if (previous.stage !== cleaned.stage) {
+          pushToast(
+            "success",
+            `已更新：${tooth} 阶段已切换：${previous.stage} → ${cleaned.stage}`
+          );
+          if (activeFilter !== ALL_FILTER && cleaned.stage !== activeFilter) {
+            pushToast("info", `该记录已移出当前「${activeFilter}」筛选列表`);
+          }
+        } else {
+          pushToast("success", `已更新：${tooth} 的记录已保存`);
+        }
+      }
+      resetForm();
+      return;
+    }
+
+    const record: RCRecord = {
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      ...cleaned,
       createdAt: new Date().toISOString(),
       source: "user"
     };
     setRecords((prev) => [record, ...prev]);
-    setForm(EMPTY_FORM);
-    setErrors({});
+    resetForm();
     pushToast("success", `保存成功：${tooth} 已录入，当前阶段「${record.stage}」`);
     if (activeFilter !== ALL_FILTER && activeFilter !== record.stage) {
       pushToast("info", `提示：当前筛选为「${activeFilter}」，新记录在「${record.stage}」列表中查看`);
+    }
+  };
+
+  const startEdit = (record: RCRecord) => {
+    if (confirmTimerRef.current !== null) {
+      window.clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = null;
+    }
+    setConfirmDeleteId(null);
+    setEditingId(record.id);
+    setForm({
+      tooth: record.tooth,
+      diagnosis: record.diagnosis,
+      stage: record.stage,
+      workingLength: record.workingLength,
+      note: record.note
+    });
+    setErrors({});
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => toothInputRef.current?.focus(), 250);
+    pushToast("info", `正在编辑 ${record.tooth}，修改后点击「保存修改」`);
+  };
+
+  const cancelEdit = () => {
+    resetForm();
+    pushToast("info", "已取消编辑，表单已清空");
+  };
+
+  const startDelete = (record: RCRecord) => {
+    if (editingId === record.id) {
+      resetForm();
+    }
+    setConfirmDeleteId(record.id);
+    if (confirmTimerRef.current !== null) {
+      window.clearTimeout(confirmTimerRef.current);
+    }
+    confirmTimerRef.current = window.setTimeout(() => {
+      setConfirmDeleteId(null);
+      confirmTimerRef.current = null;
+    }, CONFIRM_WINDOW);
+  };
+
+  const cancelDelete = () => {
+    setConfirmDeleteId(null);
+    if (confirmTimerRef.current !== null) {
+      window.clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = null;
+    }
+  };
+
+  const confirmDelete = (record: RCRecord) => {
+    cancelDelete();
+    setRecords((prev) => prev.filter((item) => item.id !== record.id));
+    const restore = () => {
+      setRecords((prev) => {
+        if (prev.some((item) => item.id === record.id)) return prev;
+        // 按创建时间降序插回原相对位置
+        const next = [...prev, record].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        return next;
+      });
+      pushToast("success", `已恢复：${record.tooth} 的记录已还原`);
+      if (activeFilter !== ALL_FILTER && record.stage !== activeFilter) {
+        pushToast("info", `提示：该记录属于「${record.stage}」阶段，当前筛选为「${activeFilter}」`);
+      }
+    };
+    pushToast("success", `已移除 ${record.tooth} 的记录`, {
+      duration: UNDO_WINDOW,
+      actionLabel: "撤销移除",
+      onAction: restore
+    });
+    if (editingId === record.id) {
+      resetForm();
     }
   };
 
@@ -275,6 +415,9 @@ function App() {
     setRecords((prev) =>
       prev.map((item) => (item.id === record.id ? { ...item, stage: nextStage } : item))
     );
+    if (editingId === record.id) {
+      setForm((prev) => ({ ...prev, stage: nextStage }));
+    }
     pushToast("success", `${record.tooth} 阶段已切换：${record.stage} → ${nextStage}`);
     if (activeFilter !== ALL_FILTER && nextStage !== activeFilter) {
       pushToast("info", `该记录已移出当前「${activeFilter}」筛选列表`);
@@ -351,7 +494,19 @@ function App() {
       <div className="toast-stack" aria-live="polite">
         {toasts.map((toast) => (
           <div key={toast.id} className={`toast toast-${toast.type}`}>
-            {toast.text}
+            <span>{toast.text}</span>
+            {toast.actionLabel && toast.onAction && (
+              <button
+                type="button"
+                className="toast-action"
+                onClick={() => {
+                  toast.onAction!();
+                  dismissToast(toast.id);
+                }}
+              >
+                {toast.actionLabel}
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -416,14 +571,22 @@ function App() {
               className="primary-action"
               type="button"
               onClick={() => {
+                if (editingId) {
+                  resetForm();
+                }
                 formRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-                toothInputRef.current?.focus();
+                window.setTimeout(() => toothInputRef.current?.focus(), 250);
                 pushToast("info", "请在下方填写牙位、诊断、阶段和工作长度");
               }}
             >
               新增记录
             </button>
           </div>
+          {editingId && (
+            <div className="edit-banner">
+              正在编辑现有记录 — 可修改牙位、诊断、阶段、工作长度和备注，完成后点击「保存修改」
+            </div>
+          )}
           <form ref={formRef} className="field-grid" onSubmit={handleSubmit} noValidate>
             <label>
               <span>牙位 *</span>
@@ -486,19 +649,31 @@ function App() {
               />
             </label>
             <div className="form-actions field-full">
-              <button type="submit" className="primary-action">
-                保存记录
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setForm(EMPTY_FORM);
-                  setErrors({});
-                  pushToast("info", "录入表单已清空");
-                }}
-              >
-                清空
-              </button>
+              {editingId ? (
+                <>
+                  <button type="submit" className="primary-action">
+                    保存修改
+                  </button>
+                  <button type="button" onClick={cancelEdit}>
+                    取消编辑
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="submit" className="primary-action">
+                    保存记录
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetForm();
+                      pushToast("info", "录入表单已清空");
+                    }}
+                  >
+                    清空
+                  </button>
+                </>
+              )}
             </div>
           </form>
         </section>
@@ -563,6 +738,40 @@ function App() {
                       {stage}
                     </button>
                   ))}
+                </div>
+                <div className="record-actions">
+                  {confirmDeleteId === record.id ? (
+                    <span className="delete-confirm">
+                      <span>确认移除 {record.tooth} 的记录？移除后 6 秒内可撤销。</span>
+                      <button
+                        type="button"
+                        className="danger-action"
+                        onClick={() => confirmDelete(record)}
+                      >
+                        确认移除
+                      </button>
+                      <button type="button" onClick={cancelDelete}>
+                        取消
+                      </button>
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className={editingId === record.id ? "record-btn record-btn-active" : "record-btn"}
+                        onClick={() => (editingId === record.id ? cancelEdit() : startEdit(record))}
+                      >
+                        {editingId === record.id ? "取消编辑" : "编辑"}
+                      </button>
+                      <button
+                        type="button"
+                        className="record-btn record-btn-danger"
+                        onClick={() => startDelete(record)}
+                      >
+                        移除
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </article>
