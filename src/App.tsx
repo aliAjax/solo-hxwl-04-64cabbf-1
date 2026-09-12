@@ -67,6 +67,11 @@ const STAGES = project.filters as string[];
 
 type Stage = (typeof STAGES)[number];
 
+interface StageHistoryEntry {
+  stage: Stage;
+  at: string;
+}
+
 interface RCRecord {
   id: string;
   tooth: string;
@@ -76,6 +81,7 @@ interface RCRecord {
   note: string;
   createdAt: string;
   source: "seed" | "user";
+  history: StageHistoryEntry[];
 }
 
 interface Toast {
@@ -100,16 +106,42 @@ function extractWorkingLength(detail: string): string {
 
 function buildSeedRecords(): RCRecord[] {
   const now = new Date();
-  return project.records.map((record, index) => ({
-    id: `seed-${index}`,
-    tooth: record[0],
-    diagnosis: record[1],
-    stage: record[2] as Stage,
-    workingLength: extractWorkingLength(record[3]),
-    note: record[3],
-    createdAt: new Date(now.getTime() - (index + 1) * 86400000).toISOString(),
-    source: "seed"
-  }));
+  return project.records.map((record, index) => {
+    const createdAt = new Date(now.getTime() - (index + 1) * 86400000).toISOString();
+    return {
+      id: `seed-${index}`,
+      tooth: record[0],
+      diagnosis: record[1],
+      stage: record[2] as Stage,
+      workingLength: extractWorkingLength(record[3]),
+      note: record[3],
+      createdAt,
+      source: "seed",
+      history: [{ stage: record[2] as Stage, at: createdAt }]
+    };
+  });
+}
+
+/** 为旧版本（无 history 字段）数据补一条初始阶段记录 */
+function migrateRecord(item: RCRecord): RCRecord | null {
+  if (
+    !item ||
+    typeof item.id !== "string" ||
+    typeof item.tooth !== "string" ||
+    typeof item.diagnosis !== "string" ||
+    !STAGES.includes(item.stage)
+  ) {
+    return null;
+  }
+  if (Array.isArray(item.history) && item.history.length > 0) return item;
+  return {
+    ...item,
+    workingLength: typeof item.workingLength === "string" ? item.workingLength : "",
+    note: typeof item.note === "string" ? item.note : "",
+    createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+    source: item.source === "user" ? "user" : "seed",
+    history: [{ stage: item.stage, at: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString() }]
+  };
 }
 
 function loadRecords(): RCRecord[] {
@@ -118,14 +150,7 @@ function loadRecords(): RCRecord[] {
     if (!raw) return buildSeedRecords();
     const parsed = JSON.parse(raw) as RCRecord[];
     if (!Array.isArray(parsed)) return buildSeedRecords();
-    const valid = parsed.filter(
-      (item) =>
-        item &&
-        typeof item.id === "string" &&
-        typeof item.tooth === "string" &&
-        typeof item.diagnosis === "string" &&
-        STAGES.includes(item.stage)
-    );
+    const valid = parsed.map(migrateRecord).filter((item): item is RCRecord => item !== null);
     return valid.length ? valid : buildSeedRecords();
   } catch {
     return buildSeedRecords();
@@ -141,6 +166,18 @@ function normalizeTooth(value: string): string {
 
 const TOOTH_PATTERN = /^#?(1[1-8]|2[1-8]|3[1-8]|4[1-8])$/;
 const WL_PATTERN = /^\d{1,2}(\.\d)?$/;
+
+function formatHistoryTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
 
 interface FormState {
   tooth: string;
@@ -178,6 +215,7 @@ function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set());
   const toastSeq = useRef(0);
   const toothInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -297,11 +335,19 @@ function App() {
 
     if (editingId) {
       let previous: RCRecord | undefined;
+      const changedAt = new Date().toISOString();
       setRecords((prev) =>
         prev.map((item) => {
           if (item.id !== editingId) return item;
           previous = item;
-          return { ...item, ...cleaned };
+          return {
+            ...item,
+            ...cleaned,
+            history:
+              item.stage !== cleaned.stage
+                ? [...item.history, { stage: cleaned.stage, at: changedAt }]
+                : item.history
+          };
         })
       );
       if (previous) {
@@ -321,11 +367,13 @@ function App() {
       return;
     }
 
+    const now = new Date().toISOString();
     const record: RCRecord = {
       id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       ...cleaned,
-      createdAt: new Date().toISOString(),
-      source: "user"
+      createdAt: now,
+      source: "user",
+      history: [{ stage: cleaned.stage, at: now }]
     };
     setRecords((prev) => [record, ...prev]);
     resetForm();
@@ -412,8 +460,13 @@ function App() {
       pushToast("info", `${record.tooth} 当前已是「${nextStage}」阶段`);
       return;
     }
+    const changedAt = new Date().toISOString();
     setRecords((prev) =>
-      prev.map((item) => (item.id === record.id ? { ...item, stage: nextStage } : item))
+      prev.map((item) =>
+        item.id === record.id
+          ? { ...item, stage: nextStage, history: [...item.history, { stage: nextStage, at: changedAt }] }
+          : item
+      )
     );
     if (editingId === record.id) {
       setForm((prev) => ({ ...prev, stage: nextStage }));
@@ -422,6 +475,18 @@ function App() {
     if (activeFilter !== ALL_FILTER && nextStage !== activeFilter) {
       pushToast("info", `该记录已移出当前「${activeFilter}」筛选列表`);
     }
+  };
+
+  const toggleHistory = (id: string) => {
+    setExpandedHistory((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
   };
 
   const handleFilter = (filter: string) => {
@@ -458,7 +523,7 @@ function App() {
       [`平均工作长度(mm),${average}`],
       [`导出时间,${stamp}`],
       [],
-      ["序号", "牙位", "诊断", "阶段", "工作长度(mm)", "备注", "记录时间", "来源"]
+      ["序号", "牙位", "诊断", "阶段", "工作长度(mm)", "备注", "阶段轨迹", "记录时间", "来源"]
     ];
     filteredRecords.forEach((record, index) => {
       lines.push([
@@ -468,6 +533,9 @@ function App() {
         record.stage,
         record.workingLength || "—",
         record.note,
+        record.history
+          .map((entry) => `${entry.stage} ${formatHistoryTime(entry.at)}`)
+          .join(" → "),
         new Date(record.createdAt).toLocaleString("zh-CN", { hour12: false }),
         record.source === "seed" ? "示例记录" : "新增记录"
       ]);
@@ -725,6 +793,65 @@ function App() {
                   工作长度：{record.workingLength ? `${record.workingLength} mm` : "未记录"}
                   {record.note && <> · {record.note}</>}
                 </p>
+                <div className="stage-history">
+                  <div className="history-summary">
+                    <span className="history-latest">
+                      最近变化：
+                      {record.history.length > 1 ? (
+                        <>
+                          {record.history[record.history.length - 2].stage}
+                          <span className="history-arrow"> → </span>
+                          <strong>{record.history[record.history.length - 1].stage}</strong>
+                          <em className="history-time">
+                            {formatHistoryTime(record.history[record.history.length - 1].at)}
+                          </em>
+                        </>
+                      ) : (
+                        <>
+                          初始阶段 <strong>{record.history[0].stage}</strong>
+                          <em className="history-time">
+                            {formatHistoryTime(record.history[0].at)}
+                          </em>
+                        </>
+                      )}
+                    </span>
+                    {record.history.length > 1 && (
+                      <button
+                        type="button"
+                        className="link-button"
+                        aria-expanded={expandedHistory.has(record.id)}
+                        onClick={() => toggleHistory(record.id)}
+                      >
+                        {expandedHistory.has(record.id)
+                          ? "收起阶段历史"
+                          : `展开阶段历史（${record.history.length}）`}
+                      </button>
+                    )}
+                  </div>
+                  {expandedHistory.has(record.id) && (
+                    <ol className="history-timeline">
+                      {record.history.map((entry, historyIndex) => (
+                        <li
+                          key={`${entry.at}-${historyIndex}`}
+                          className={
+                            historyIndex === record.history.length - 1
+                              ? "history-entry history-entry-current"
+                              : "history-entry"
+                          }
+                        >
+                          <span className="history-dot" aria-hidden="true" />
+                          <span className="history-stage">{entry.stage}</span>
+                          <time className="history-at">
+                            {new Date(entry.at).toLocaleString("zh-CN", { hour12: false })}
+                          </time>
+                          {historyIndex === record.history.length - 1 && (
+                            <span className="history-current-tag">当前</span>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
                 <div className="stage-switch" role="group" aria-label={`${record.tooth} 阶段切换`}>
                   <span>阶段切换：</span>
                   {STAGES.map((stage) => (
