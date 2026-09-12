@@ -167,6 +167,16 @@ function normalizeTooth(value: string): string {
 const TOOTH_PATTERN = /^#?(1[1-8]|2[1-8]|3[1-8]|4[1-8])$/;
 const WL_PATTERN = /^\d{1,2}(\.\d)?$/;
 
+type SortField = "createdAt" | "workingLength";
+type SortDirection = "desc" | "asc";
+
+const SORT_OPTIONS: { value: string; label: string; field: SortField; direction: SortDirection }[] = [
+  { value: "createdAt-desc", label: "记录时间：最新优先", field: "createdAt", direction: "desc" },
+  { value: "createdAt-asc", label: "记录时间：最早优先", field: "createdAt", direction: "asc" },
+  { value: "workingLength-desc", label: "工作长度：长 → 短", field: "workingLength", direction: "desc" },
+  { value: "workingLength-asc", label: "工作长度：短 → 长", field: "workingLength", direction: "asc" }
+];
+
 function formatHistoryTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -210,6 +220,8 @@ function MetricCard({ label, value, index }: { label: string; value: string; ind
 function App() {
   const [records, setRecords] = useState<RCRecord[]>(loadRecords);
   const [activeFilter, setActiveFilter] = useState<string>(ALL_FILTER);
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [sortOption, setSortOption] = useState(SORT_OPTIONS[0].value);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -254,13 +266,37 @@ function App() {
     toastTimersRef.current.set(id, timer);
   };
 
-  const filteredRecords = useMemo(
-    () =>
+  const filteredRecords = useMemo(() => {
+    const keyword = searchKeyword.trim().toUpperCase();
+    const scoped =
       activeFilter === ALL_FILTER
         ? records
-        : records.filter((record) => record.stage === activeFilter),
-    [records, activeFilter]
-  );
+        : records.filter((record) => record.stage === activeFilter);
+    const matched = keyword
+      ? scoped.filter(
+          (record) =>
+            record.tooth.toUpperCase().includes(keyword) ||
+            record.diagnosis.toUpperCase().includes(keyword)
+        )
+      : scoped;
+    const option =
+      SORT_OPTIONS.find((item) => item.value === sortOption) ?? SORT_OPTIONS[0];
+    return [...matched].sort((a, b) => {
+      if (option.field === "createdAt") {
+        const diff = a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+        return option.direction === "asc" ? diff : -diff;
+      }
+      const lengthA = parseFloat(a.workingLength);
+      const lengthB = parseFloat(b.workingLength);
+      const validA = Number.isFinite(lengthA) && lengthA > 0;
+      const validB = Number.isFinite(lengthB) && lengthB > 0;
+      // 缺失工作长度的记录始终排到最后
+      if (!validA && !validB) return 0;
+      if (!validA) return 1;
+      if (!validB) return -1;
+      return option.direction === "asc" ? lengthA - lengthB : lengthB - lengthA;
+    });
+  }, [records, activeFilter, searchKeyword, sortOption]);
 
   const metricValues = useMemo(() => {
     const waiting = records.filter((record) => record.stage !== "充填").length;
@@ -511,6 +547,8 @@ function App() {
       ? (lengths.reduce((sum, value) => sum + value, 0) / lengths.length).toFixed(1)
       : "—";
     const scope = activeFilter === ALL_FILTER ? "全部阶段" : `阶段：${activeFilter}`;
+    const keyword = searchKeyword.trim();
+    const activeSort = SORT_OPTIONS.find((item) => item.value === sortOption) ?? SORT_OPTIONS[0];
     const stamp = new Date().toLocaleString("zh-CN", { hour12: false });
     const escapeCell = (value: string) => {
       const text = value ?? "";
@@ -519,6 +557,8 @@ function App() {
     const lines = [
       ["牙科根管治疗记录摘要"],
       [`筛选范围,${scope}`],
+      [`搜索关键字,${keyword || "无"}`],
+      [`排序方式,${activeSort.label}`],
       [`记录数量,${filteredRecords.length}`],
       [`平均工作长度(mm),${average}`],
       [`导出时间,${stamp}`],
@@ -625,7 +665,11 @@ function App() {
             ))}
           </div>
           <p className="filter-hint">
-            当前：{activeFilter === ALL_FILTER ? "全部阶段" : activeFilter} · {filteredRecords.length} 条
+            当前：{activeFilter === ALL_FILTER ? "全部阶段" : activeFilter} ·{" "}
+            {activeFilter === ALL_FILTER
+              ? records.length
+              : records.filter((record) => record.stage === activeFilter).length}{" "}
+            条
           </p>
         </aside>
 
@@ -761,18 +805,64 @@ function App() {
             导出摘要（{filteredRecords.length}）
           </button>
         </div>
+        <div className="list-toolbar">
+          <div className="search-box">
+            <input
+              type="search"
+              placeholder="按牙位或诊断搜索，如 36、牙髓炎"
+              value={searchKeyword}
+              aria-label="按牙位或诊断搜索"
+              onChange={(event) => setSearchKeyword(event.target.value)}
+            />
+            {searchKeyword && (
+              <button
+                type="button"
+                className="search-clear"
+                aria-label="清除搜索"
+                onClick={() => setSearchKeyword("")}
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <label className="sort-box">
+            <span>排序</span>
+            <select
+              value={sortOption}
+              aria-label="排序方式"
+              onChange={(event) => setSortOption(event.target.value)}
+            >
+              {SORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <p className="list-scope">
-          列表范围：{activeFilter === ALL_FILTER ? "全部阶段" : `阶段「${activeFilter}」`} · 共 {filteredRecords.length} 条
-          {activeFilter !== ALL_FILTER && (
-            <button className="link-button" onClick={() => handleFilter(ALL_FILTER)}>
-              查看全部
+          列表范围：{activeFilter === ALL_FILTER ? "全部阶段" : `阶段「${activeFilter}」`}
+          {searchKeyword.trim() && <> · 搜索「{searchKeyword.trim()}」</>}
+          {" · 共 "}
+          {filteredRecords.length} 条
+          {(activeFilter !== ALL_FILTER || searchKeyword.trim()) && (
+            <button
+              className="link-button"
+              onClick={() => {
+                setActiveFilter(ALL_FILTER);
+                setSearchKeyword("");
+              }}
+            >
+              重置视图
             </button>
           )}
         </p>
         <div className="record-list">
           {filteredRecords.length === 0 && (
             <div className="empty-state">
-              「{activeFilter}」阶段下暂无记录，可切换筛选或在上方录入新记录。
+              {searchKeyword.trim()
+                ? `当前范围内没有牙位或诊断包含「${searchKeyword.trim()}」的记录，可更换关键字或重置搜索。`
+                : "「" + activeFilter + "」阶段下暂无记录，可切换筛选或在上方录入新记录。"}
             </div>
           )}
           {filteredRecords.map((record: RCRecord, index: number) => (

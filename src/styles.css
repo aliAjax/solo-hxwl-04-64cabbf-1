@@ -292,6 +292,58 @@ textarea {
   flex-wrap: wrap;
 }
 
+.list-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.search-box {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+}
+
+.search-box input {
+  width: 100%;
+  padding-right: 36px;
+}
+
+.search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  min-height: 28px;
+  width: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  font-size: 18px;
+  line-height: 1;
+  color: #64748b;
+  background: #eef2f7;
+}
+
+.sort-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.sort-box span {
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.sort-box select {
+  min-height: 38px;
+  min-width: 180px;
+}
+
 .link-button {
   min-height: auto;
   padding: 0 4px;
