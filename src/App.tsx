@@ -228,6 +228,7 @@ function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const toastSeq = useRef(0);
   const toothInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -241,6 +242,20 @@ function App() {
       // 存储不可用时仅在本次会话内保留，不阻断操作
     }
   }, [records]);
+
+  // 勾选只保留当前阶段筛选范围内仍存在的记录（删除、阶段移出、切筛选时自动清理）
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const inScope = new Set(
+        records
+          .filter((record) => activeFilter === ALL_FILTER || record.stage === activeFilter)
+          .map((record) => record.id)
+      );
+      const next = new Set([...prev].filter((id) => inScope.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [records, activeFilter]);
 
   const dismissToast = (id: number) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
@@ -523,6 +538,75 @@ function App() {
       }
       return next;
     });
+  };
+
+  const visibleIds = useMemo(() => filteredRecords.map((record) => record.id), [filteredRecords]);
+  const selectedVisibleCount = useMemo(
+    () => visibleIds.filter((id) => selectedIds.has(id)).length,
+    [visibleIds, selectedIds]
+  );
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        visibleIds.forEach((id) => next.delete(id));
+      } else {
+        visibleIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleBatchStage = (nextStage: Stage) => {
+    const targets = filteredRecords.filter((record) => selectedIds.has(record.id));
+    if (targets.length === 0) {
+      pushToast("error", "请先勾选至少一条记录");
+      return;
+    }
+    const changeable = targets.filter((record) => record.stage !== nextStage);
+    const unchanged = targets.length - changeable.length;
+    if (changeable.length === 0) {
+      pushToast("info", `选中的 ${targets.length} 条记录均已处于「${nextStage}」阶段，无需变更`);
+      return;
+    }
+    const changedIds = new Set(changeable.map((record) => record.id));
+    const changedAt = new Date().toISOString();
+    setRecords((prev) =>
+      prev.map((item) =>
+        changedIds.has(item.id)
+          ? { ...item, stage: nextStage, history: [...item.history, { stage: nextStage, at: changedAt }] }
+          : item
+      )
+    );
+    // 正在编辑的记录被批量改阶段时，同步表单中的阶段
+    if (editingId && changedIds.has(editingId)) {
+      setForm((prev) => ({ ...prev, stage: nextStage }));
+    }
+    pushToast(
+      "success",
+      `已将 ${changeable.length} 条记录切换到「${nextStage}」阶段` +
+        (unchanged > 0 ? `，另有 ${unchanged} 条已处于该阶段，已跳过` : "")
+    );
+    if (activeFilter !== ALL_FILTER && nextStage !== activeFilter) {
+      pushToast("info", `这些记录已移出当前「${activeFilter}」筛选列表，勾选已清空`);
+    }
   };
 
   const handleFilter = (filter: string) => {
@@ -840,6 +924,42 @@ function App() {
             </select>
           </label>
         </div>
+        <div className="batch-bar">
+          <label className="batch-select-all">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              ref={(el) => {
+                if (el) el.indeterminate = someVisibleSelected;
+              }}
+              onChange={toggleSelectAllVisible}
+              disabled={visibleIds.length === 0}
+            />
+            <span>全选当前列表</span>
+          </label>
+          <span className="batch-count" aria-live="polite">
+            已选 <strong>{selectedVisibleCount}</strong> 条（当前列表 {visibleIds.length} 条）
+          </span>
+          <span className="batch-label">批量切换阶段：</span>
+          <div className="batch-stage-buttons">
+            {STAGES.map((stage) => (
+              <button
+                key={stage}
+                type="button"
+                className="stage-btn"
+                disabled={selectedVisibleCount === 0}
+                onClick={() => handleBatchStage(stage as Stage)}
+              >
+                {stage}
+              </button>
+            ))}
+          </div>
+          {selectedVisibleCount > 0 && (
+            <button type="button" className="link-button" onClick={clearSelection}>
+              清除勾选
+            </button>
+          )}
+        </div>
         <p className="list-scope">
           列表范围：{activeFilter === ALL_FILTER ? "全部阶段" : `阶段「${activeFilter}」`}
           {searchKeyword.trim() && <> · 搜索「{searchKeyword.trim()}」</>}
@@ -871,6 +991,13 @@ function App() {
               <div className="record-body">
                 <div className="record-head">
                   <h3>
+                    <input
+                      type="checkbox"
+                      className="record-check"
+                      checked={selectedIds.has(record.id)}
+                      onChange={() => toggleSelect(record.id)}
+                      aria-label={`选择 ${record.tooth} 的记录`}
+                    />
                     {record.tooth}
                     {record.source === "seed" && <span className="tag tag-seed">示例</span>}
                   </h3>

@@ -344,6 +344,59 @@ textarea {
   min-width: 180px;
 }
 
+.batch-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fbff;
+  font-size: 13px;
+}
+
+.batch-select-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.batch-select-all input,
+.record-check {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.batch-count {
+  color: #526070;
+}
+
+.batch-count strong {
+  color: var(--primary);
+  font-size: 15px;
+}
+
+.batch-label {
+  color: #64748b;
+}
+
+.batch-stage-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.record-check {
+  vertical-align: -2px;
+}
+
 .link-button {
   min-height: auto;
   padding: 0 4px;
